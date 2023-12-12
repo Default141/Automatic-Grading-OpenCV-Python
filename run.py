@@ -1,94 +1,91 @@
 import numpy as np
 import cv2
 from grade_paper import ProcessPage
+from scipy.spatial import distance as dist
 
-#alogrithm for sorting points clockwise
-def clockwise_sort(x):
-	return (np.arctan2(x[0] - mx, x[1] - my) + 0.5 * np.pi) % (2*np.pi)
+def order_points(pts):
+    # sort the points based on their x-coordinates
+    xSorted = pts[np.argsort(pts[:, 0]), :]
+
+    # grab the left-most and right-most points from the sorted
+    # x-coordinate points
+    leftMost = xSorted[:2, :]
+    rightMost = xSorted[2:, :]
+
+    # now, sort the left-most coordinates according to their
+    # y-coordinates so we can grab the top-left and bottom-left points
+    leftMost = leftMost[np.argsort(leftMost[:, 1]), :]
+    (tl, bl) = leftMost
+
+    # now that we have the top-left coordinate, use it as an
+    # anchor to calculate the Euclidean distance between the
+    # top-left and right-most points; by the Pythagorean
+    # theorem, the point with the largest distance will be
+    # our bottom-right point
+    D = dist.cdist(tl[np.newaxis], rightMost, "euclidean")[0]
+    (br, tr) = rightMost[np.argsort(D)[::-1], :]
+
+    # return the coordinates in top-left, top-right,
+    # bottom-right, and bottom-left order
+    return np.array([tl, tr, br, bl], dtype="float32")
 
 cv2.namedWindow('Original Image')
 cv2.namedWindow('Scanned Paper')
 
-#ret, image = cap.read()
-image = cv2.imread("test.jpg")
-ratio = len(image[0]) / 500.0 #used for resizing the image
-original_image = image.copy() #make a copy of the original image
+# Load the image
+image = cv2.imread("img_12.png")
+ratio = image.shape[1] / 500.0 # used for resizing the image
+original_image = image.copy() # make a copy of the original image
 
-#find contours on the smaller image because it's faster
-image = cv2.resize(image, (0,0), fx=1/ratio, fy=1/ratio)
-
-#gray and filter the image
+# Resize the image for faster processing
+image = cv2.resize(image, (500, int(image.shape[0] / ratio)))
+cv2.imshow("image", image)
+cv2.waitKey(0)
+# Gray and filter the image
 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-#bilateral filtering removes noise and preserves edges
 gray = cv2.bilateralFilter(gray, 11, 17, 17)
-#find the edges
 edged = cv2.Canny(gray, 250, 300)
 
-#find the contours
-temp_img, contours, _ = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-#sort the contours
+# Find the contours
+contours, _ = cv2.findContours(edged.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 contours = sorted(contours, key=cv2.contourArea, reverse=True)[:10]
 
-#find the biggest contour
-biggestContour = None
-
-# loop over our contours
+# Find the biggest contour
 for contour in contours:
-	# approximate the contour
-	peri = cv2.arcLength(contour, True)
-	approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
+    peri = cv2.arcLength(contour, True)
+    approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
 
-	#return the biggest 4 sided approximated contour
-	if len(approx) == 4:
-		biggestContour = approx
-		break
-
-#used for the perspective transform
-points = []
-desired_points = [[0,0], [425, 0], [425, 550], [0, 550]] #8.5in by 11in. paper
-
-#convert to np.float32
-desired_points = np.float32(desired_points)
-
-#extract points from contour
+    if len(approx) == 4:
+        biggestContour = approx
+        break
+else:
+    biggestContour = None
+# Proceed if a contour was found
 if biggestContour is not None:
-	for i in range(0, 4):
-		points.append(biggestContour[i][0])
+    # Sort the contour points
+    points = order_points(biggestContour.reshape(4, 2) * ratio)
 
-#find midpoint of all the contour points for sorting algorithm
-mx = sum(point[0] for point in points) / 4
-my = sum(point[1] for point in points) / 4
+    # Desired points for the perspective transform
+    desired_points = np.float32([[0, 0], [425, 0], [425, 550], [0, 550]])
 
-#sort points
-points.sort(key=clockwise_sort, reverse=True)
+    # Perspective transform
+    M = cv2.getPerspectiveTransform(points, desired_points)
+    paper = cv2.warpPerspective(original_image, M, (425, 550))
 
-#convert points to np.float32
-points = np.float32(points)
 
-#resize points so we can take the persepctive transform from the
-#original image giving us the maximum resolution
-paper = []
-points *= ratio
-answers = 1
-if biggestContour is not None:
-	#create persepctive matrix
-	M = cv2.getPerspectiveTransform(points, desired_points)
-	#warp persepctive
-	paper = cv2.warpPerspective(original_image, M, (425, 550))
-	answers, paper, codes = ProcessPage(paper)
-	cv2.imshow("Scanned Paper", paper)
+    answers, paper = ProcessPage(paper)
 
-#draw the contour
-if biggestContour is not None:
-	if answers != -1:
-		cv2.drawContours(image, [biggestContour], -1, (0, 255, 0), 3)
-		print answers
-		if codes is not None:
-			print codes
-	else:
-		cv2.drawContours(image, [biggestContour], -1, (0, 0, 255), 3)
+    # Display the processed paper
+    cv2.imshow("Scanned Paper", paper)
 
-cv2.imshow("Original Image", cv2.resize(image, (0, 0), fx=0.7, fy=0.7))
+    # Draw the contour on the original image
+    cv2.drawContours(image, [biggestContour], -1, (0, 255, 0), 3)
+    print(answers)
+    # if codes is not None:
+    #     print(codes)
+
+# Show the original image
+cv2.imshow("Original Image", cv2.resize(image, (500, int(image.shape[0] / ratio))))
 
 cv2.waitKey(0)
+cv2.destroyAllWindows()
